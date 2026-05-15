@@ -27,14 +27,20 @@ export const deleteTeam = asyncHandler(async (req, res) => {
   const team = await Team.findById(req.params.id)
   if (!team) throw new ApiError(404, 'Team not found')
 
-  if (team.assignedProject?.title) {
-    await Project.updateOne(
-      { title: team.assignedProject.title, assignedTo: team._id },
-      { $set: { assigned: false, assignedTo: null, assignedAt: null } }
-    )
-  }
+  const currentTitle = String(team.assignedProject?.title || '').trim()
 
   await team.deleteOne()
+
+  if (currentTitle) {
+    const stillUsedByOtherTeam = await Team.exists({ 'assignedProject.title': currentTitle })
+    if (!stillUsedByOtherTeam) {
+      await Project.updateOne(
+        { title: currentTitle },
+        { $set: { assigned: false, assignedTo: null, assignedAt: null } }
+      )
+    }
+  }
+
   res.json({ message: 'Team deleted' })
 })
 
@@ -92,10 +98,17 @@ export const updateTeam = asyncHandler(async (req, res) => {
       }
 
       if (currentTitle) {
-        await Project.updateOne(
-          { title: currentTitle, assignedTo: team._id },
-          { $set: { assigned: false, assignedTo: null, assignedAt: null } }
-        )
+        const sameTitleTeamCount = await Team.countDocuments({
+          _id: { $ne: team._id },
+          'assignedProject.title': currentTitle
+        })
+
+        if (sameTitleTeamCount === 0) {
+          await Project.updateOne(
+            { title: currentTitle },
+            { $set: { assigned: false, assignedTo: null, assignedAt: null } }
+          )
+        }
       }
 
       const assignedAt = new Date()

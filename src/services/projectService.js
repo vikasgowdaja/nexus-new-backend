@@ -1,46 +1,42 @@
 import { Project } from '../models/Project.js'
+import { Team } from '../models/Team.js'
 
 export const assignRandomProject = async (teamId) => {
-  const unassignedCount = await Project.countDocuments({ assigned: false })
+  const activeAssignedTitles = await Team.distinct('assignedProject.title', {
+    'assignedProject.title': { $exists: true, $ne: '' }
+  })
 
-  // Round 1: unique allocation from unassigned pool.
-  if (unassignedCount > 0) {
-    for (let attempt = 0; attempt < 5; attempt += 1) {
-      const [project] = await Project.aggregate([
-        { $match: { assigned: false } },
+  // Round 1: unique allocation from titles not currently used by active teams.
+  const uniquePipeline = activeAssignedTitles.length > 0
+    ? [
+        { $match: { title: { $nin: activeAssignedTitles } } },
         { $sample: { size: 1 } }
-      ])
+      ]
+    : [{ $sample: { size: 1 } }]
 
-      if (!project) {
-        return null
-      }
+  const [uniqueProject] = await Project.aggregate(uniquePipeline)
 
-      const assignedAt = new Date()
-      const updated = await Project.findOneAndUpdate(
-        { _id: project._id, assigned: false },
-        {
-          $set: {
-            assigned: true,
-            assignedTo: teamId,
-            assignedAt
-          }
-        },
-        { new: true }
-      )
-
-      if (updated) {
-        return {
-          title: updated.title,
-          description: updated.description,
-          difficulty: updated.difficulty,
-          domain: updated.domain,
-          technologies: updated.technologies,
+  if (uniqueProject) {
+    const assignedAt = new Date()
+    await Project.updateOne(
+      { _id: uniqueProject._id },
+      {
+        $set: {
+          assigned: true,
+          assignedTo: teamId,
           assignedAt
         }
       }
-    }
+    )
 
-    return null
+    return {
+      title: uniqueProject.title,
+      description: uniqueProject.description,
+      difficulty: uniqueProject.difficulty,
+      domain: uniqueProject.domain,
+      technologies: uniqueProject.technologies,
+      assignedAt
+    }
   }
 
   // Round 2+: pool exhausted, allow random reuse to keep assignment running.
@@ -60,10 +56,18 @@ export const assignRandomProject = async (teamId) => {
 }
 
 export const getProjectStats = async () => {
-  const [totalProjects, assignedProjects] = await Promise.all([
-    Project.countDocuments(),
-    Project.countDocuments({ assigned: true })
+  const [projects, activeAssignedTitles] = await Promise.all([
+    Project.find().select('title').lean(),
+    Team.distinct('assignedProject.title', {
+      'assignedProject.title': { $exists: true, $ne: '' }
+    })
   ])
+
+  const totalProjects = projects.length
+  const projectTitleSet = new Set(projects.map((project) => String(project.title).toLowerCase()))
+  const assignedProjects = activeAssignedTitles.reduce((count, title) => {
+    return projectTitleSet.has(String(title).toLowerCase()) ? count + 1 : count
+  }, 0)
 
   return {
     totalProjects,
