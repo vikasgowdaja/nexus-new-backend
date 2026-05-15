@@ -29,7 +29,7 @@ export const deleteTeam = asyncHandler(async (req, res) => {
 
   if (team.assignedProject?.title) {
     await Project.updateOne(
-      { title: team.assignedProject.title },
+      { title: team.assignedProject.title, assignedTo: team._id },
       { $set: { assigned: false, assignedTo: null, assignedAt: null } }
     )
   }
@@ -91,22 +91,20 @@ export const updateTeam = asyncHandler(async (req, res) => {
         throw new ApiError(404, 'Selected project not found')
       }
 
-      if (nextProject.assigned && String(nextProject.assignedTo) !== String(team._id)) {
-        throw new ApiError(409, 'Selected project is already assigned to another team')
-      }
-
       if (currentTitle) {
         await Project.updateOne(
-          { title: currentTitle },
+          { title: currentTitle, assignedTo: team._id },
           { $set: { assigned: false, assignedTo: null, assignedAt: null } }
         )
       }
 
       const assignedAt = new Date()
-      await Project.updateOne(
-        { _id: nextProject._id },
-        { $set: { assigned: true, assignedTo: team._id, assignedAt } }
-      )
+      if (!nextProject.assigned || String(nextProject.assignedTo || '') === String(team._id)) {
+        await Project.updateOne(
+          { _id: nextProject._id },
+          { $set: { assigned: true, assignedTo: team._id, assignedAt } }
+        )
+      }
 
       team.assignedProject = {
         title: nextProject.title,
@@ -121,6 +119,56 @@ export const updateTeam = asyncHandler(async (req, res) => {
 
   await team.save()
   res.json(team)
+})
+
+// ADMIN: Reconcile project assignment flags based on current teams
+export const reconcileProjectAssignments = asyncHandler(async (req, res) => {
+  const teams = await Team.find().lean()
+  const activeTitles = new Set(
+    teams
+      .map((team) => String(team.assignedProject?.title || '').trim())
+      .filter(Boolean)
+  )
+
+  await Project.updateMany(
+    { title: { $nin: Array.from(activeTitles) } },
+    { $set: { assigned: false, assignedTo: null, assignedAt: null } }
+  )
+
+  const projects = await Project.find({ title: { $in: Array.from(activeTitles) } })
+  const projectByTitle = new Map(projects.map((project) => [project.title, project]))
+
+  for (const team of teams) {
+    const title = String(team.assignedProject?.title || '').trim()
+    if (!title) {
+      continue
+    }
+
+    const project = projectByTitle.get(title)
+    if (!project) {
+      continue
+    }
+
+    if (!project.assigned) {
+      project.assigned = true
+      project.assignedTo = team._id
+      project.assignedAt = team.assignedAt || team.updatedAt || new Date()
+      await project.save()
+    }
+  }
+
+  const [projectStats, totalTeams] = await Promise.all([
+    getProjectStats(),
+    Team.countDocuments()
+  ])
+
+  res.json({
+    message: 'Project assignments reconciled successfully',
+    stats: {
+      ...projectStats,
+      totalTeams
+    }
+  })
 })
 
 export const registerTeam = asyncHandler(async (req, res) => {
