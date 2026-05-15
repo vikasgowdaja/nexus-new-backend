@@ -7,13 +7,14 @@ import {
   deleteTeam,
   updateTeam
 } from '../controllers/teamController.js'
+import { requireAdminAuth } from '../middleware/auth.js'
 
 const router = Router()
 
 
 // Admin CRUD
-router.delete('/:id', deleteTeam)
-router.patch('/:id', updateTeam)
+router.delete('/:id', requireAdminAuth, deleteTeam)
+router.patch('/:id', requireAdminAuth, updateTeam)
 
 router.post('/register', registerTeam)
 router.get('/export', exportTeamsExcel)
