@@ -68,6 +68,7 @@ const sanitizeTeamDashboardPayload = (team) => ({
   assignedProject: team.assignedProject,
   assignedAt: team.assignedAt,
   customProjectIdea: team.customProjectIdea,
+  profileUpdateRequest: team.profileUpdateRequest,
   isDefaultPassword: Boolean(team.isDefaultPassword),
   passwordChangedAt: team.passwordChangedAt,
   securityActivity: team.securityActivity || {}

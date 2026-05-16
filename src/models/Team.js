@@ -68,6 +68,44 @@ const securityActivitySchema = new mongoose.Schema(
   { _id: false }
 )
 
+const profileUpdatePayloadSchema = new mongoose.Schema(
+  {
+    teamName: String,
+    leadName: String,
+    leadEmail: String,
+    leadUsn: String,
+    leadPhone: String,
+    college: String,
+    department: String,
+    members: {
+      type: [memberSchema],
+      default: []
+    },
+    requestNote: String
+  },
+  { _id: false }
+)
+
+const profileUpdateRequestSchema = new mongoose.Schema(
+  {
+    status: {
+      type: String,
+      enum: ['none', 'pending', 'approved', 'rejected', 'recalled'],
+      default: 'none'
+    },
+    payload: {
+      type: profileUpdatePayloadSchema,
+      default: () => ({})
+    },
+    requestedAt: Date,
+    recalledAt: Date,
+    reviewedAt: Date,
+    reviewedBy: String,
+    reviewNote: String
+  },
+  { _id: false }
+)
+
 const teamSchema = new mongoose.Schema(
   {
     teamNumber: {
@@ -183,6 +221,10 @@ const teamSchema = new mongoose.Schema(
     securityActivity: {
       type: securityActivitySchema,
       default: () => ({})
+    },
+    profileUpdateRequest: {
+      type: profileUpdateRequestSchema,
+      default: () => ({ status: 'none' })
     },
     assignedAt: {
       type: Date,
