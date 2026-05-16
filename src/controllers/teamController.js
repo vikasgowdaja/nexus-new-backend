@@ -5,10 +5,12 @@ import { ApiError } from '../utils/apiError.js'
 import { getNextTeamNumber } from '../services/teamNumberService.js'
 import { assignRandomProject, getProjectStats } from '../services/projectService.js'
 import ExcelJS from 'exceljs'
+import { createDefaultTeamPassword, hashPassword } from '../utils/password.js'
 
 const isEmail = (value) => /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(value)
 const isPhone = (value) => /^\+?[0-9]{10,15}$/.test(value)
 const escapeRegex = (value) => value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+const ALLOWED_DIFFICULTIES = new Set(['Easy', 'Medium', 'Hard'])
 
 const normalizeMembers = (members = []) => {
   return members
@@ -18,6 +20,67 @@ const normalizeMembers = (members = []) => {
       email: String(member.email || '').trim().toLowerCase()
     }))
     .filter((member) => member.name && member.usn && member.email)
+}
+
+const normalizeTechnologies = (value) => {
+  if (Array.isArray(value)) {
+    return value
+      .map((item) => String(item || '').trim())
+      .filter(Boolean)
+  }
+
+  return String(value || '')
+    .split(',')
+    .map((item) => item.trim())
+    .filter(Boolean)
+}
+
+const normalizeCustomProjectIdea = (customProjectIdea) => {
+  if (!customProjectIdea || typeof customProjectIdea !== 'object') {
+    return null
+  }
+
+  const normalized = {
+    title: String(customProjectIdea.title || '').trim(),
+    description: String(customProjectIdea.description || '').trim(),
+    difficulty: String(customProjectIdea.difficulty || '').trim(),
+    domain: String(customProjectIdea.domain || '').trim(),
+    technologies: normalizeTechnologies(customProjectIdea.technologies)
+  }
+
+  const hasAnyData =
+    normalized.title ||
+    normalized.description ||
+    normalized.difficulty ||
+    normalized.domain ||
+    normalized.technologies.length
+
+  if (!hasAnyData) {
+    return null
+  }
+
+  if (
+    !normalized.title ||
+    !normalized.description ||
+    !normalized.difficulty ||
+    !normalized.domain ||
+    normalized.technologies.length === 0
+  ) {
+    throw new ApiError(
+      400,
+      'Custom project idea requires title, description, difficulty, domain, and technologies'
+    )
+  }
+
+  if (!ALLOWED_DIFFICULTIES.has(normalized.difficulty)) {
+    throw new ApiError(400, 'Custom project difficulty must be one of Easy, Medium, or Hard')
+  }
+
+  return {
+    ...normalized,
+    status: 'pending',
+    submittedAt: new Date()
+  }
 }
 
 const toPlainTeam = (team) => (team.toObject ? team.toObject() : team)
@@ -49,30 +112,108 @@ export const updateTeam = asyncHandler(async (req, res) => {
   const team = await Team.findById(req.params.id)
   if (!team) throw new ApiError(404, 'Team not found')
 
-  const updatableFields = [
-    'teamName',
+  if (req.body.teamNumber !== undefined) {
+    const normalizedTeamNumber = String(req.body.teamNumber || '').trim().toUpperCase()
+    if (!/^TEAM-\d{3,}$/.test(normalizedTeamNumber)) {
+      throw new ApiError(400, 'Team number format must be like TEAM-001')
+    }
+
+    const existingTeamNumber = await Team.findOne({
+      _id: { $ne: team._id },
+      teamNumber: normalizedTeamNumber
+    })
+
+    if (existingTeamNumber) {
+      throw new ApiError(409, 'Team number is already in use')
+    }
+
+    team.teamNumber = normalizedTeamNumber
+  }
+
+  if (req.body.teamName !== undefined) {
+    const normalizedTeamName = String(req.body.teamName || '').trim()
+    if (!normalizedTeamName) {
+      throw new ApiError(400, 'Team name is required')
+    }
+
+    const safeTeamName = escapeRegex(normalizedTeamName)
+    const existingTeamName = await Team.findOne({
+      _id: { $ne: team._id },
+      teamName: { $regex: new RegExp(`^${safeTeamName}$`, 'i') }
+    })
+
+    if (existingTeamName) {
+      throw new ApiError(409, 'Team name is already in use')
+    }
+
+    team.teamName = normalizedTeamName
+  }
+
+  if (req.body.leadEmail !== undefined) {
+    const normalizedLeadEmail = String(req.body.leadEmail || '').trim().toLowerCase()
+    if (!isEmail(normalizedLeadEmail)) {
+      throw new ApiError(400, 'Invalid lead email')
+    }
+
+    const existingLeadEmail = await Team.findOne({
+      _id: { $ne: team._id },
+      leadEmail: normalizedLeadEmail
+    })
+
+    if (existingLeadEmail) {
+      throw new ApiError(409, 'Lead email is already in use')
+    }
+
+    team.leadEmail = normalizedLeadEmail
+  }
+
+  if (req.body.leadUsn !== undefined) {
+    const normalizedLeadUsn = String(req.body.leadUsn || '').trim().toUpperCase()
+    if (!normalizedLeadUsn) {
+      throw new ApiError(400, 'Lead USN is required')
+    }
+
+    const existingLeadUsn = await Team.findOne({
+      _id: { $ne: team._id },
+      leadUsn: normalizedLeadUsn
+    })
+
+    if (existingLeadUsn) {
+      throw new ApiError(409, 'Lead USN is already in use')
+    }
+
+    team.leadUsn = normalizedLeadUsn
+
+    if (team.isDefaultPassword) {
+      const nextDefaultPassword = createDefaultTeamPassword(normalizedLeadUsn)
+      team.passwordHash = await hashPassword(nextDefaultPassword)
+      team.passwordHistory = []
+      team.passwordChangedAt = null
+    }
+  }
+
+  const simpleUpdatableFields = [
     'leadName',
-    'leadEmail',
-    'leadUsn',
     'leadPhone',
     'college',
     'department'
   ]
 
-  updatableFields.forEach((field) => {
+  simpleUpdatableFields.forEach((field) => {
     if (req.body[field] === undefined) return
+    if (field === 'leadPhone') {
+      const value = String(req.body[field] || '').trim()
+      if (!isPhone(value)) {
+        throw new ApiError(400, 'Invalid lead phone number')
+      }
+      team[field] = value
+      return
+    }
+
     const value = String(req.body[field]).trim()
-
-    if (field === 'leadEmail') {
-      team[field] = value.toLowerCase()
-      return
+    if (!value) {
+      throw new ApiError(400, `${field} is required`)
     }
-
-    if (field === 'leadUsn') {
-      team[field] = value.toUpperCase()
-      return
-    }
-
     team[field] = value
   })
 
@@ -193,7 +334,8 @@ export const registerTeam = asyncHandler(async (req, res) => {
     leadPhone,
     college,
     department,
-    members
+    members,
+    customProjectIdea
   } = req.body
 
   if (
@@ -217,6 +359,7 @@ export const registerTeam = asyncHandler(async (req, res) => {
   }
 
   const normalizedMembers = normalizeMembers(members)
+  const normalizedCustomProjectIdea = normalizeCustomProjectIdea(customProjectIdea)
   if (normalizedMembers.length < 2 || normalizedMembers.length > 6) {
     throw new ApiError(400, 'Team members must be between 2 and 6')
   }
@@ -280,6 +423,8 @@ export const registerTeam = asyncHandler(async (req, res) => {
   }
 
   const teamNumber = await getNextTeamNumber()
+  const defaultPassword = createDefaultTeamPassword(normalizedLeadUsn)
+  const passwordHash = await hashPassword(defaultPassword)
 
   const team = await Team.create({
     teamNumber,
@@ -291,6 +436,10 @@ export const registerTeam = asyncHandler(async (req, res) => {
     college: String(college).trim(),
     department: String(department).trim(),
     members: normalizedMembers,
+    passwordHash,
+    passwordHistory: [],
+    isDefaultPassword: true,
+    passwordChangedAt: null,
     assignedProject: {
       title: '',
       description: '',
@@ -298,24 +447,27 @@ export const registerTeam = asyncHandler(async (req, res) => {
       domain: '',
       technologies: []
     },
-    assignedAt: new Date()
+    customProjectIdea: normalizedCustomProjectIdea,
+    assignedAt: null
   })
 
-  const assignedProject = await assignRandomProject(team._id)
-  if (!assignedProject) {
-    await Team.deleteOne({ _id: team._id })
-    throw new ApiError(409, 'Project assignment failed. Please try again')
-  }
+  if (!normalizedCustomProjectIdea) {
+    const assignedProject = await assignRandomProject(team._id)
+    if (!assignedProject) {
+      await Team.deleteOne({ _id: team._id })
+      throw new ApiError(409, 'Project assignment failed. Please try again')
+    }
 
-  team.assignedProject = {
-    title: assignedProject.title,
-    description: assignedProject.description,
-    difficulty: assignedProject.difficulty,
-    domain: assignedProject.domain,
-    technologies: assignedProject.technologies
+    team.assignedProject = {
+      title: assignedProject.title,
+      description: assignedProject.description,
+      difficulty: assignedProject.difficulty,
+      domain: assignedProject.domain,
+      technologies: assignedProject.technologies
+    }
+    team.assignedAt = assignedProject.assignedAt
+    await team.save()
   }
-  team.assignedAt = assignedProject.assignedAt
-  await team.save()
 
   const teamData = toPlainTeam(team)
 
@@ -334,7 +486,9 @@ export const registerTeam = asyncHandler(async (req, res) => {
   })
 
   res.status(201).json({
-    message: 'Registration successful',
+    message: normalizedCustomProjectIdea
+      ? 'Registration successful. Custom project idea submitted for approval.'
+      : 'Registration successful',
     team: teamData
   })
 })
@@ -377,6 +531,11 @@ export const exportTeamsExcel = asyncHandler(async (req, res) => {
     { header: 'Department', key: 'department', width: 20 },
     { header: 'Members', key: 'members', width: 42 },
     { header: 'Assigned Project', key: 'assignedProject', width: 32 },
+    { header: 'Custom Idea Title', key: 'customIdeaTitle', width: 28 },
+    { header: 'Custom Idea Status', key: 'customIdeaStatus', width: 20 },
+    { header: 'Custom Idea Domain', key: 'customIdeaDomain', width: 22 },
+    { header: 'Custom Idea Difficulty', key: 'customIdeaDifficulty', width: 20 },
+    { header: 'Custom Idea Technologies', key: 'customIdeaTechnologies', width: 34 },
     { header: 'Assigned At', key: 'assignedAt', width: 24 },
     { header: 'Registered At', key: 'createdAt', width: 24 }
   ]
@@ -397,6 +556,13 @@ export const exportTeamsExcel = asyncHandler(async (req, res) => {
         .map((member) => `${member.name} (${member.usn}) <${member.email}>`)
         .join('; '),
       assignedProject: team.assignedProject?.title || '-',
+      customIdeaTitle: team.customProjectIdea?.title || '-',
+      customIdeaStatus: team.customProjectIdea?.status || '-',
+      customIdeaDomain: team.customProjectIdea?.domain || '-',
+      customIdeaDifficulty: team.customProjectIdea?.difficulty || '-',
+      customIdeaTechnologies: Array.isArray(team.customProjectIdea?.technologies)
+        ? team.customProjectIdea.technologies.join(', ')
+        : '-',
       assignedAt: team.assignedAt ? new Date(team.assignedAt).toLocaleString() : '-',
       createdAt: team.createdAt ? new Date(team.createdAt).toLocaleString() : '-'
     })

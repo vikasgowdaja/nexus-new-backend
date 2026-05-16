@@ -23,6 +23,51 @@ const memberSchema = new mongoose.Schema(
   { _id: false }
 )
 
+const passwordResetSchema = new mongoose.Schema(
+  {
+    otpHash: String,
+    otpExpiresAt: Date,
+    otpVerifyAttempts: {
+      type: Number,
+      default: 0
+    },
+    otpResendCount: {
+      type: Number,
+      default: 0
+    },
+    lastOtpSentAt: Date,
+    resetTokenHash: String,
+    resetTokenExpiresAt: Date
+  },
+  { _id: false }
+)
+
+const securityActivitySchema = new mongoose.Schema(
+  {
+    otpRequestCount: {
+      type: Number,
+      default: 0
+    },
+    lastOtpRequestedAt: Date,
+    otpVerifySuccessCount: {
+      type: Number,
+      default: 0
+    },
+    lastOtpVerifiedAt: Date,
+    passwordResetCount: {
+      type: Number,
+      default: 0
+    },
+    lastPasswordResetAt: Date,
+    adminForceResetCount: {
+      type: Number,
+      default: 0
+    },
+    lastPasswordResetByAdminAt: Date
+  },
+  { _id: false }
+)
+
 const teamSchema = new mongoose.Schema(
   {
     teamNumber: {
@@ -80,6 +125,22 @@ const teamSchema = new mongoose.Schema(
         message: 'Members must be between 2 and 6'
       }
     },
+    passwordHash: {
+      type: String,
+      default: ''
+    },
+    passwordHistory: {
+      type: [String],
+      default: []
+    },
+    isDefaultPassword: {
+      type: Boolean,
+      default: true
+    },
+    passwordChangedAt: {
+      type: Date,
+      default: null
+    },
     assignedProject: {
       title: String,
       description: String,
@@ -87,9 +148,45 @@ const teamSchema = new mongoose.Schema(
       domain: String,
       technologies: [String]
     },
+    customProjectIdea: {
+      title: {
+        type: String,
+        trim: true
+      },
+      description: {
+        type: String,
+        trim: true
+      },
+      difficulty: {
+        type: String,
+        enum: ['Easy', 'Medium', 'Hard']
+      },
+      domain: {
+        type: String,
+        trim: true
+      },
+      technologies: {
+        type: [String],
+        default: []
+      },
+      status: {
+        type: String,
+        enum: ['pending', 'approved', 'rejected'],
+        default: 'pending'
+      },
+      submittedAt: Date
+    },
+    passwordReset: {
+      type: passwordResetSchema,
+      default: () => ({})
+    },
+    securityActivity: {
+      type: securityActivitySchema,
+      default: () => ({})
+    },
     assignedAt: {
       type: Date,
-      required: true
+      default: null
     }
   },
   {
